@@ -5,3 +5,6 @@
 
 ###Stop:
 `/stop`
+
+###Send file:
+`/file /path/to/file`
