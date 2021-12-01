@@ -10,6 +10,13 @@ Build artifacts in `build` folder
 
 # Protocol:
 
+## Connecting to server:
+
+- Client send command `CONNECT` to server
+- Server validate username and time
+- If ok then server send to client command `ACCEPT`
+- Else server send command `DISCONNECT` with reason
+
 ## Packet format:
 
 | command |  time  | username_length | data_length |        username        |        data        |
