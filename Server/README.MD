@@ -1,7 +1,7 @@
 # Server
 
-###Launch:
+## Launch:
 `java -jar Server.jar port`
 
-###Stop:
+## Stop:
 `/stop`

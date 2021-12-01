@@ -1,10 +1,10 @@
 # Client
 
-###Launch:
+## Launch:
 `java -jar Client.jar host port`
 
-###Stop:
+## Stop:
 `/stop`
 
-###Send file:
+## Send file:
 `/file /path/to/file`

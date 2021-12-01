@@ -1,4 +1,4 @@
-#Build:
+# Build:
 
 Build artifacts in `build` folder
 
@@ -8,7 +8,7 @@ Build artifacts in `build` folder
 ## Linux
 `./gradlew build`
 
-#Protocol:
+# Protocol:
 
 ## Packet format:
 
