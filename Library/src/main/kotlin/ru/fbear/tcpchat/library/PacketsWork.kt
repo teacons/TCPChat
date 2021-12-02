@@ -45,7 +45,8 @@ fun getMessage(inputStream: InputStream): Message {
         usernameLength,
         dataLength,
         username.toList(),
-        dataByteList.dropLastWhile { it == 0.toByte() })
+        dataByteList
+    )
 }
 
 fun sendMessage(message: Message, outputStream: OutputStream) {
