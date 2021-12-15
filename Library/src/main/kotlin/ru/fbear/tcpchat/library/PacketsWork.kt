@@ -1,18 +1,20 @@
 package ru.fbear.tcpchat.library
 
-import java.io.InputStream
-import java.io.OutputStream
-import java.net.SocketException
+import java.io.IOException
+import java.nio.ByteBuffer
+import java.nio.channels.SocketChannel
 import java.text.SimpleDateFormat
 import java.util.*
 
-fun getMessage(inputStream: InputStream): Message {
-    val firstHalfOfPacket = ByteArray(9)
-    val readBytesFirstHalfPacket = inputStream.read(firstHalfOfPacket)
+fun getMessage(socketChannel: SocketChannel): Message {
+    val firstByteBuffer = ByteBuffer.allocate(9).apply { clear() }
+    val readBytesFirst = socketChannel.read(firstByteBuffer)
 
-    if (readBytesFirstHalfPacket == -1) throw SocketException("Stream end")
+    if (readBytesFirst < 0) throw IOException("Stream end")
+    if (readBytesFirst == 0) return Message.empty()
 
-    val command = when (firstHalfOfPacket[0].toUByte().toInt()) {
+    val firstByteArray = firstByteBuffer.array()
+    val command = when (firstByteArray[0].toUByte().toInt()) {
         0 -> Command.MESSAGE
         1 -> Command.CONNECT
         2 -> Command.ACCEPT
@@ -20,35 +22,44 @@ fun getMessage(inputStream: InputStream): Message {
         4 -> Command.FILE
         else -> throw IllegalArgumentException("Wrong Command")
     }
-    val time = firstHalfOfPacket.slice(1..4).toByteArray().toLong()
-    val usernameLength = firstHalfOfPacket[5].toUByte().toInt()
-    val dataLength = firstHalfOfPacket.slice(6..8).toByteArray().toInt()
+    val time = firstByteArray.slice(1..4).toByteArray().toLong()
+    val usernameLength = firstByteArray[5].toUByte().toInt()
+    val dataLength = firstByteArray.slice(6..8).toByteArray().toInt()
 
-    val username = ByteArray(usernameLength)
+    firstByteBuffer.flip()
 
-    inputStream.read(username)
+
+    val usernameByteBuffer = ByteBuffer.allocate(usernameLength).apply { clear() }
+
+    socketChannel.read(usernameByteBuffer)
+
+    val username = usernameByteBuffer.array().toList()
 
     val dataByteList = mutableListOf<Byte>()
 
     var needRead = dataLength
 
+    val dataByteBuffer = ByteBuffer.allocate(4096)
+
     while (needRead != 0) {
-        val dataByteArray = ByteArray(4096)
-        val readBytesDataByteArray = inputStream.read(dataByteArray)
-        dataByteList.addAll(dataByteArray.slice(0 until readBytesDataByteArray))
-        needRead -= readBytesDataByteArray
+        dataByteBuffer.clear()
+        val readBytesData = socketChannel.read(dataByteBuffer)
+        dataByteList.addAll(dataByteBuffer.array().slice(0 until readBytesData))
+        needRead -= readBytesData
+        dataByteBuffer.flip()
     }
+
 
     return Message(
         command,
         time,
         usernameLength,
         dataLength,
-        username.toList(),
+        username,
         dataByteList.dropLastWhile { it == 0.toByte() })
 }
 
-fun sendMessage(message: Message, outputStream: OutputStream) {
+fun sendMessage(message: Message, socketChannel: SocketChannel) {
     val dataLengthBytes = message.dataLength.toByteArray()
     val packet =
         byteArrayOf(message.command.byte.toByte()) +
@@ -58,8 +69,13 @@ fun sendMessage(message: Message, outputStream: OutputStream) {
                 message.username.toByteArray() +
                 message.data.toByteArray()
 
-    outputStream.write(packet)
-    outputStream.flush()
+    var written = 0
+
+    while (written != packet.size) {
+        val buffer = ByteBuffer.wrap(packet, written, packet.size - written)
+        written += socketChannel.write(buffer)
+    }
+
 }
 
 fun Long.toByteArray(): ByteArray {

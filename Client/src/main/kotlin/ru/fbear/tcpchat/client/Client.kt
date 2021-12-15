@@ -3,9 +3,9 @@ package ru.fbear.tcpchat.client
 import ru.fbear.tcpchat.library.*
 import java.io.File
 import java.io.IOException
-import java.net.Socket
-import java.net.SocketException
-import java.net.UnknownHostException
+import java.net.InetSocketAddress
+import java.nio.channels.SocketChannel
+import java.nio.channels.UnresolvedAddressException
 import java.nio.file.Paths
 import kotlin.system.exitProcess
 
@@ -25,21 +25,26 @@ class Client(private val host: String, private val port: Int) {
             }
         }
 
-        val socket =
+        val socketChannel =
             try {
                 println("Connecting to server...")
-                Socket(host, port)
+                SocketChannel.open()
             } catch (e: IOException) {
                 println("Not connected")
                 exitProcess(0)
-            } catch (e: UnknownHostException) {
-                println("Not connected")
-                println("Host unreachable")
-                exitProcess(0)
             }
 
-        val usernameBytes = username.toByteArray(charset)
+        try {
+            socketChannel.connect(InetSocketAddress(host, port))
+        } catch (e: UnresolvedAddressException) {
+            println("Not connected")
+            println("Host unreachable")
+            exitProcess(0)
+        }
 
+        socketChannel.configureBlocking(false)
+
+        val usernameBytes = username.toByteArray(charset)
 
         try {
             sendMessage(
@@ -51,24 +56,24 @@ class Client(private val host: String, private val port: Int) {
                     usernameBytes.toList(),
                     emptyList()
                 ),
-                socket.getOutputStream()
+                socketChannel
             )
-        } catch (e: SocketException) {
-            socket.close()
+        } catch (e: IOException) {
+            socketChannel.close()
             println("Not connected")
             println("Reason: ${e.message}")
             exitProcess(0)
         }
 
-        Thread(MessageHandler(socket, username)).start()
+        Thread(MessageHandler(socketChannel, username)).start()
 
-        while (!socket.isClosed) {
+        while (socketChannel.isOpen) {
             val text = readLine()
 
             when {
                 text == null || text == "/stop" -> {
                     println("Shutting down...")
-                    socket.close()
+                    socketChannel.close()
                     println("Done")
                     exitProcess(0)
                 }
@@ -88,11 +93,11 @@ class Client(private val host: String, private val port: Int) {
                                         usernameBytes.toList(),
                                         fileBytes.toList()
                                     ),
-                                    socket.getOutputStream()
+                                    socketChannel
                                 )
                                 println("File sent")
-                            } catch (e: SocketException) {
-                                socket.close()
+                            } catch (e: IOException) {
+                                socketChannel.close()
                                 println("Disconnected from server")
                                 println("Reason: ${e.message}")
                                 exitProcess(0)
@@ -113,10 +118,10 @@ class Client(private val host: String, private val port: Int) {
                                     usernameBytes.toList(),
                                     data
                                 ),
-                                socket.getOutputStream()
+                                socketChannel
                             )
-                        } catch (e: SocketException) {
-                            socket.close()
+                        } catch (e: IOException) {
+                            socketChannel.close()
                             println("Disconnected from server")
                             println("Reason: ${e.message}")
                             exitProcess(0)
@@ -126,14 +131,14 @@ class Client(private val host: String, private val port: Int) {
         }
     }
 
-    inner class MessageHandler(private val socket: Socket, private val username: String) : Runnable {
-
-        private val inputStream = socket.getInputStream()
+    inner class MessageHandler(private val socketChannel: SocketChannel, private val username: String) : Runnable {
 
         override fun run() {
             try {
-                while (!socket.isClosed) {
-                    val message = getMessage(inputStream)
+                while (socketChannel.isOpen) {
+                    val message = getMessage(socketChannel)
+
+                    if (message == Message.empty()) continue
 
                     when (message.command) {
                         Command.MESSAGE -> println(
@@ -145,7 +150,7 @@ class Client(private val host: String, private val port: Int) {
                             println("Success")
                         }
                         Command.DISCONNECT -> {
-                            socket.close()
+                            socketChannel.close()
                             println("Disconnected from server")
                             if (message.data.isNotEmpty()) println(
                                 "Reason: ${
@@ -169,8 +174,8 @@ class Client(private val host: String, private val port: Int) {
                 }
             } catch (e: IllegalArgumentException) {
                 println("Received wrong command from server")
-            } catch (e: SocketException) {
-                socket.close()
+            } catch (e: IOException) {
+                socketChannel.close()
                 println("Disconnected from server")
                 println("Reason: ${e.message}")
                 exitProcess(0)

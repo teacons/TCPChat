@@ -1,4 +1,6 @@
-# Build:
+# TCP chat (unblocking)
+
+## Build:
 
 Build artifacts in `build` folder
 

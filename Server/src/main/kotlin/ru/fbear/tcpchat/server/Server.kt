@@ -1,9 +1,11 @@
 package ru.fbear.tcpchat.server
 
 import ru.fbear.tcpchat.library.*
-import java.net.ServerSocket
-import java.net.Socket
-import java.net.SocketException
+import java.io.IOException
+import java.net.InetSocketAddress
+import java.nio.channels.ServerSocketChannel
+import java.nio.channels.SocketChannel
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.system.exitProcess
 
 fun main(args: Array<String>) {
@@ -15,23 +17,29 @@ class Server(private val port: Int) {
 
     val charset = Charsets.UTF_8
 
-    val clientSockets = mutableMapOf<Socket, String>()
+    val authorizedSocketChannels = ConcurrentHashMap<SocketChannel, String>()
 
-    private lateinit var serverSocket: ServerSocket
+    private lateinit var serverSocketChannel: ServerSocketChannel
+
+    val unauthorizedSocketChannel = mutableListOf<SocketChannel>()
 
     fun launch() {
-        serverSocket = try {
-            ServerSocket(port)
-        } catch (e: IllegalArgumentException) {
-            println("Wrong port")
-            exitProcess(0)
-        }
+        serverSocketChannel = ServerSocketChannel.open()
+
+        serverSocketChannel.configureBlocking(false)
+
+        serverSocketChannel.bind(InetSocketAddress(port))
 
         Thread(ConsoleReader()).start()
+        Thread(ClientMessageHandler()).start()
+        Thread(ClientAuthHandler()).start()
 
-        while (!serverSocket.isClosed) {
-            val socket = serverSocket.accept()
-            Thread(ClientMessageHandler(socket)).start()
+        while (serverSocketChannel.isOpen) {
+            val socketChannel = serverSocketChannel.accept()
+            if (socketChannel != null) {
+                socketChannel.configureBlocking(false)
+                unauthorizedSocketChannel.add(socketChannel)
+            }
         }
     }
 
@@ -43,7 +51,7 @@ class Server(private val port: Int) {
                     "/stop", null -> {
                         println("Shutting down...")
                         disconnectAll()
-                        serverSocket.close()
+                        serverSocketChannel.close()
                         println("Done")
                         exitProcess(0)
                     }
@@ -54,63 +62,90 @@ class Server(private val port: Int) {
 
     }
 
-    inner class ClientMessageHandler(private val socket: Socket) : Runnable {
-
-        private val inputStream = socket.getInputStream()
-
-        private val outputStream = socket.getOutputStream()
-
+    inner class ClientAuthHandler : Runnable {
         override fun run() {
+            while (!Thread.currentThread().isInterrupted) {
+                val unauthorizedSocketChannelImmutable = unauthorizedSocketChannel.toList()
+                for (socketChannel in unauthorizedSocketChannelImmutable) {
+                    try {
+                        val message = getMessage(socketChannel)
 
-            try {
-                var message = getMessage(inputStream)
+                        if (message == Message.empty()) continue
 
-                if (message.command == Command.CONNECT &&
-                    clientSockets.containsValue(message.username.toByteArray().toString(charset).lowercase())
-                ) {
-                    sendDisconnectCommand(socket, "Username exists")
-                    socket.close()
-                } else {
-                    clientSockets[socket] = message.username.toByteArray().toString(charset).lowercase()
+                        if (message.command == Command.CONNECT &&
+                            authorizedSocketChannels.containsValue(
+                                message.username.toByteArray().toString(charset).lowercase()
+                            )
+                        ) {
+                            sendDisconnectCommand(socketChannel, "Username exists")
+                            socketChannel.close()
+                        } else {
+                            sendMessage(
+                                Message(
+                                    Command.ACCEPT,
+                                    System.currentTimeMillis() / 1000L,
+                                    0,
+                                    0,
+                                    emptyList(),
+                                    emptyList()
+                                ),
+                                socketChannel
+                            )
 
-                    sendMessage(
-                        Message(
-                            Command.ACCEPT,
-                            System.currentTimeMillis() / 1000L,
-                            0,
-                            0,
-                            emptyList(),
-                            emptyList()
-                        ),
-                        outputStream
-                    )
+                            val username = message.username.toByteArray().toString(charset)
 
-                    serverMessage(clientSockets[socket]!!, true)
-                    while (!socket.isClosed) {
-                        message = getMessage(inputStream)
-                        if ((System.currentTimeMillis() / 1000L) - message.time > 60) {
-                            sendDisconnectCommand(socket, "Wrong time")
-                            disconnectUser(socket)
-                            Thread.currentThread().interrupt()
+                            authorizedSocketChannels[socketChannel] = username.lowercase()
+
+                            unauthorizedSocketChannel.remove(socketChannel)
+
+                            serverMessage(username, true)
                         }
+                    } catch (e: IOException) {
+                        sendDisconnectCommand(socketChannel, e.message)
+                        socketChannel.close()
+                    }
+                }
+            }
+        }
+    }
+
+    inner class ClientMessageHandler : Runnable {
+        override fun run() {
+            while (!Thread.currentThread().isInterrupted) {
+                for (socketChannel in authorizedSocketChannels.keys) {
+                    try {
+                        val message = getMessage(socketChannel)
+
+                        if (message == Message.empty()) continue
+
+                        if (message.command != Command.MESSAGE && message.command != Command.FILE) {
+                            sendDisconnectCommand(socketChannel, "Received wrong command")
+                            socketChannel.close()
+                        }
+
+                        if ((System.currentTimeMillis() / 1000L) - message.time > 60) {
+                            sendDisconnectCommand(socketChannel, "Wrong time")
+                            disconnectUser(socketChannel)
+                        }
+
                         sendToAll(message)
+
                         println(
                             "<{${message.command}} ${getDateTime(message.time)}> [${
                                 message.username.toByteArray().toString(charset)
                             }]"
                         )
+
+                    } catch (e: IOException) {
+                        disconnectUser(socketChannel)
                     }
                 }
-            } catch (e: SocketException) {
-                disconnectUser(socket)
-                Thread.currentThread().interrupt()
             }
         }
-
     }
 
-    fun sendDisconnectCommand(socket: Socket, text: String) {
-        val data = text.toByteArray(charset).toList()
+    fun sendDisconnectCommand(socketChannel: SocketChannel, text: String?) {
+        val data = text?.toByteArray(charset)?.toList() ?: "".toByteArray(charset).toList()
 
         sendMessage(
             Message(
@@ -121,13 +156,13 @@ class Server(private val port: Int) {
                 emptyList(),
                 data
             ),
-            socket.getOutputStream()
+            socketChannel
         )
     }
 
-    fun disconnectUser(socket: Socket) {
-        socket.close()
-        val username = clientSockets.remove(socket)!!
+    fun disconnectUser(socketChannel: SocketChannel) {
+        socketChannel.close()
+        val username = authorizedSocketChannels.remove(socketChannel)!!
         serverMessage(username, false)
 
     }
@@ -149,16 +184,18 @@ class Server(private val port: Int) {
     }
 
     private fun disconnectAll() {
-        for (socket in clientSockets.keys)
-            sendDisconnectCommand(socket, "Server shutting down")
+        for (socketChannel in authorizedSocketChannels.keys) {
+            sendDisconnectCommand(socketChannel, "Server shutting down")
+            socketChannel.close()
+        }
     }
 
     private fun sendToAll(message: Message) {
-        for (socket in clientSockets.keys)
+        for (socketChannel in authorizedSocketChannels.keys)
             try {
-                sendMessage(message, socket.getOutputStream())
-            } catch (e: SocketException) {
-                disconnectUser(socket)
+                sendMessage(message, socketChannel)
+            } catch (e: IOException) {
+                disconnectUser(socketChannel)
             }
     }
 
